@@ -120,6 +120,8 @@ def fetch_month(year: int, month: int) -> pd.DataFrame:
     # gaps become NaN demand rows, and periods the grid doesn't expect are kept
     # for validate() to reject.
     grid = _period_grid(start, end)
+    if end >= date.today() - timedelta(days=1):
+        grid = grid[grid["start_time"] <= df["start_time"].max()]
     df = grid.merge(df, on=KEYS, how="outer", suffixes=("_grid", ""))
     df["start_time"] = df["start_time"].fillna(df.pop("start_time_grid"))
 
@@ -134,6 +136,7 @@ def validate(df: pd.DataFrame, year: int, month: int) -> None:
         raise IngestError(f"{label}: {dupes} duplicate (date, period) rows")
 
     grid = _period_grid(*_month_bounds(year, month))
+    grid = grid[grid["start_time"] <= df["start_time"].max()]
     expected = grid.groupby("settlement_date").size()
     counts = df.groupby("settlement_date").size()
     bad = counts[counts.ne(expected.reindex(counts.index))]
@@ -167,14 +170,27 @@ def write_partition(df: pd.DataFrame, root: Path, year: int, month: int) -> Path
     return path
 
 
+def _is_complete(path: Path, year: int, month: int) -> bool:
+    """returns true if the partition reaches the months last settlement period"""
+    last = _period_grid(*_month_bounds(year, month))["start_time"].iloc[-1]
+    return pd.read_parquet(path, columns=["start_time"])["start_time"].max() >= last
+
+
 def backfill(
-    root: Path, start: date, end: date, overwrite: bool = False, pause: float = 0.5
+    root: Path,
+    start: date,
+    end: date | None = None,
+    overwrite: bool = False,
+    pause: float = 0.5,
 ) -> None:
+    # defaulting to yesterday so a run on the first doesnt request a month with no date yet
+    end = end or date.today() - timedelta(days=1)
+
     for ts in pd.date_range(start, end, freq="MS"):
         year, month = ts.year, ts.month
         path = partition_path(root, year, month)
 
-        if path.exists() and not overwrite:
+        if path.exists() and not overwrite and _is_complete(path, year, month):
             log.info("skip %s-%02d (exists)", year, month)
             continue
 
@@ -187,4 +203,4 @@ def backfill(
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
-    backfill(Path("data/raw/indo"), date(2016, 3, 1), date(2026, 8, 31))
+    backfill(Path("data/raw/indo"), start=date(2016, 3, 1))
