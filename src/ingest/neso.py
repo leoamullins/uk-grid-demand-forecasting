@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import logging
-import time
-from datetime import date, timedelta
 from pathlib import Path
 
 import pandas as pd
@@ -47,11 +45,14 @@ def ingest(root: Path, start_year: int = 2016) -> None:
 
 def _parse_dates(s: pd.Series) -> pd.Series:
     s = s.astype("string").str.strip()
-    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d-%b-%Y"):
-        out = pd.to_datetime(s, format=fmt, errors="coerce")
-        if out.notna().all():
-            return out.dt.date
-    raise ValueError(f"no single format parsed all dates; sample: {s.head().tolist()}")
+    out = pd.Series(pd.NaT, index=s.index, dtype="datetime64[ns]")
+    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d-%b-%Y", "%d-%b-%y"):
+        unparsed = out.isna()
+        out[unparsed] = pd.to_datetime(s[unparsed], format=fmt, errors="coerce")
+    if out.isna().any():
+        bad = s[out.isna()]
+        raise ValueError(f"unrecognised date format; sample: {bad.head().tolist()}")
+    return out.dt.date
 
 
 def load(root: Path) -> pd.DataFrame:
